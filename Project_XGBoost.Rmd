@@ -1,0 +1,210 @@
+---
+title: "PA2-XGBoost"
+author: "Xiyi Lin"
+date: "2024-02-21"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**Predictor variables**
+id: ID of listing
+name: Name of listing
+host_id: ID of host
+host_name: Name of host
+neighbourhood_group: Group of neighbourhood
+neighbourhood: Name of neighborhood
+latitude: Latitude of listing: 
+longitude: Longitude of listing
+room_type: Type of listing
+minimum_nights: Minimum number of nights
+number_of_reviews: Total number of reviews
+last_review: Date of last review
+reviews_per_month: Average number of reviews per month
+calculated_host_listings_count: Number of listings owned by a host
+availability_365: Number of days listing is available each year
+number_of_reviews_ltm: Number of reviews last month
+license: Host license ownership
+rating: Rating of listing
+bedroom: Number of bedrooms in listing
+beds: Number of beds in listing
+baths: Number of baths in listing
+
+**Feature Engineering**
+minimum_nights_bins: Group minimum nights into less than 7 days, 7-30 days, more than 30 days
+review_days:  days to last reviews (1/5/2024)
+
+**Response variable**
+price: Price per night
+
+# Load data and library
+```{r}
+library(xgboost)
+library(caret)
+library(dplyr)
+df <- read.table("df.csv",sep=",",header=TRUE)
+```
+# Data Preprocessing
+```{r}
+na.omit(df) # track for missing values
+# create factors
+df$neighbourhood_group <- as.factor(df$neighbourhood_group)
+df$room_type <- as.factor(df$room_type)
+df$license <- as.factor(df$license)
+df$minimum_nights_bins <- as.factor(df$minimum_nights_bins)
+# Subset data
+features <- df[, c("neighbourhood_group", "room_type", "number_of_reviews", 
+                   "reviews_per_month", "calculated_host_listings_count", "number_of_reviews_ltm", 
+                   "license", "rating", "bedrooms", "beds", "baths", "minimum_nights_bins", "review_days")]
+# Create dummy variables
+features_matrix <- model.matrix(~ . - 1, data = features)
+# Log transform and separate the target variable
+target <- log(df$price)
+data <- as.data.frame(features_matrix)
+data$price <- target
+```
+# Split the Data
+```{r}
+set.seed(123) # for reproducibility
+index <- createDataPartition(data$price, p = 0.8, list = FALSE)
+train_data <- data[index,]
+test_data <- data[-index,]
+```
+# Model Training
+```{r}
+# Preparing the data
+train_matrix <- as.matrix(train_data[, -which(names(train_data) == "price")])
+train_label <- train_data$price
+# Construct xgb.DMatrix object
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+# Parameters
+params <- list(
+    objective = "reg:squarederror",
+    eta = 0.3,
+    max_depth = 6,
+    subsample = 0.8,
+    colsample_bytree = 0.8
+)
+xgb_model <- xgboost(params = params, data = dtrain, nrounds = 100, verbose = 0)
+```
+# Model Evaluation
+```{r}
+test_matrix <- as.matrix(test_data[, -which(names(test_data) == "price")])
+true <- test_data$price
+dtest <- xgb.DMatrix(data = test_matrix, label = true)
+
+# Predicting
+pred <- predict(xgb_model, dtest)
+rmse <- sqrt(mean((pred - true)^2)) # Root Mean Squared Error
+print(paste("RMSE on test set:", rmse))
+mae <- mean(abs(pred - true))
+print(paste("MAE on test set:", mae)) # Mean Absolute Error
+r_squared <- cor(pred, true)^2
+print(paste("R-squared:",r_squared))
+```
+# Interpretation
+```{r}
+# Feature Importance
+importance_matrix <- xgb.importance(feature_names = colnames(features_matrix), model = xgb_model)
+print(importance_matrix)
+
+# Plot the feature importance
+xgb.plot.importance(importance_matrix)
+
+# Tree Visualization
+xgb.plot.tree(feature_names = colnames(features_matrix), model = xgb_model, n_first_tree = 1)
+```
+
+# Hyperparameter Optimization
+```{r}
+features <- data[, setdiff(names(data), 'price')]  # Remove the target variable
+target <- data$price  # Target variable
+dtrain <- xgb.DMatrix(data = as.matrix(features), label = target)
+
+param_grid <- expand.grid(
+  eta = c(0.1, 0.3, 0.5),
+  max_depth = c(3, 6, 9),
+  gamma = c(0, 0.1, 0.2),
+  lambda = c(1, 1.5, 2)
+)
+
+best_params <- list()
+min_error <- Inf
+
+for(i in 1:nrow(param_grid)) {
+  params <- list(
+    booster = "gbtree",
+    objective = "reg:squarederror",
+    eta = param_grid$eta[i],
+    max_depth = param_grid$max_depth[i],
+    gamma = param_grid$gamma[i],
+    lambda = param_grid$lambda[i]
+  )
+  
+  cv_results <- xgb.cv(
+    params = params,
+    data = dtrain,
+    nrounds = 50,
+    nfold = 5,
+    metrics = "rmse", 
+    early_stopping_rounds = 10,
+    verbose = 0
+  )
+  
+  # Assuming the best iteration is the one with the lowest test RMSE mean
+  best_iteration_rmse <- min(cv_results$evaluation_log$test_rmse_mean)
+  best_iteration_index <- which.min(cv_results$evaluation_log$test_rmse_mean)
+  
+  # Update best parameters if current model is better
+  if(best_iteration_rmse < min_error) {
+    min_error <- best_iteration_rmse
+    best_params <- params
+    best_params$nrounds <- best_iteration_index  # Correct way to set the best nrounds
+  }
+}
+print(best_params)
+```
+
+```{r}
+# the final model
+params <- list(
+  booster = "gbtree",
+  objective = "reg:squarederror",
+  eta = 0.1,
+  max_depth = 9,
+  gamma = 0.1,
+  lambda = 1
+)
+
+final_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 50
+)
+
+test_matrix <- as.matrix(test_data[, -which(names(test_data) == "price")]) # Prepare test data
+true <- test_data$price # Actual prices
+dtest <- xgb.DMatrix(data = test_matrix, label = true) # Convert to DMatrix
+
+pred <- predict(final_model, dtest)
+
+rmse <- sqrt(mean((pred - true)^2))
+print(paste("RMSE on test set:", rmse))
+mae <- mean(abs(pred - true))
+print(paste("MAE on test set:", mae))
+r_squared <- cor(pred, true)^2
+print(paste("R-squared:",r_squared))
+
+# Feature Importance
+importance_matrix <- xgb.importance(feature_names = colnames(features_matrix), model = final_model)
+print(importance_matrix)
+
+# Plot the feature importance
+xgb.plot.importance(importance_matrix)
+
+# Tree Visualization
+xgb.plot.tree(feature_names = colnames(features_matrix), model = final_model, n_first_tree = 1)
+```

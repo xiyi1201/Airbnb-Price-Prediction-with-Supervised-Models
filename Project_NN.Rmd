@@ -1,0 +1,137 @@
+---
+title: "Project_NN"
+output: html_document
+date: "2024-02-21"
+---
+```{r}
+library(ALEPlot)
+library(caret)
+library(dplyr)
+library(nnet)
+library(tidyverse)
+```
+
+```{r}
+df = read_csv("df.csv")
+df
+```
+
+```{r}
+df = select(df, -...1)
+df = select(df, -last_review)
+df = select(df, -minimum_nights)
+```
+
+```{r}
+df$price = log(df$price)
+df$neighbourhood_group = as.factor(df$neighbourhood_group)
+df$room_type = as.factor(df$room_type)
+df$license = as.factor(df$license)
+df$minimum_nights_bins = as.factor(df$minimum_nights_bins)
+df[,c(4:7, 9:12, 14)] <- scale(df[,c(4:7, 9:12, 14)], center = TRUE, scale = TRUE)
+df
+```
+
+```{r}
+reg = lm(price ~ ., data = df)
+summary(reg)
+```
+
+```{r}
+CVInd <- function(n,K) {  
+  #n is sample size; K is number of parts; returns K-length list of indices for each part
+  m<-floor(n/K)  #approximate size of each part
+  r<-n-m*K  
+  I<-sample(n,n)  #random reordering of the indices
+  Ind<-list()  #will be list of indices for all K parts
+  length(Ind)<-K
+  for (k in 1:K) {
+    if (k <= r) kpart <- ((m+1)*(k-1)+1):((m+1)*k)  
+    else kpart<-((m+1)*r+m*(k-r-1)+1):((m+1)*r+m*(k-r))
+    Ind[[k]] <- I[kpart]  #indices for kth part of data
+  }
+  Ind
+}
+```
+
+```{r}
+set.seed(420)
+Nrep <- 3 #number of replicates of CV
+K <- 5  #K-fold CV on each replicate
+n.models = 9 #number of different models to fit
+n = nrow(df)
+y <- df$price
+yhat = matrix(0, n, n.models)
+MSE <- matrix(0, Nrep, n.models)
+for (j in 1:Nrep) {
+  Ind <- CVInd(n, K)
+  for (k in 1:K) {
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 15, decay = 1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 1] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 10, decay = 1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 2] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 5, decay = 1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 3] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 15, decay = 0.1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 4] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 10, decay = 0.1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 5] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 5, decay = 0.1, maxit=1000, trace=F)
+    yhat[Ind[[k]], 6] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 15, decay = 0.01, maxit=1000, trace=F)
+    yhat[Ind[[k]], 7] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 10, decay = 0.01, maxit=1000, trace=F)
+    yhat[Ind[[k]], 8] <- as.numeric(predict(out, df[Ind[[k]],]))
+    out <- nnet(price ~. ,df[-Ind[[k]],], linout=T, skip=F, size = 5, decay = 0.01, maxit=1000, trace=F)
+    yhat[Ind[[k]], 9] <- as.numeric(predict(out, df[Ind[[k]],]))
+    print(k)
+  } #end of k loop
+  MSE[j,] = apply(yhat, 2, function(x) sum((y-x)^2, na.rm = TRUE))/n
+} #end of j loop
+MSE
+MSEAve <- apply(MSE, 2, mean); MSEAve #averaged mean square CV error
+MSEsd <- apply(MSE, 2, sd); MSEsd   #SD of mean square CV error
+r2 <- 1 - MSEAve/var(y); r2  #CV r^2
+```
+
+
+```{r}
+set.seed(420)
+nn1 <- nnet(price ~. ,df, linout=T, skip=F, size=15, decay=0.1, maxit=1000, trace=F)
+yhat <- as.numeric(predict(nn1)) 
+y <- df$price
+e <- y-yhat
+summary(nn1)
+1 - var(e)/var(y)
+```
+
+```{r}
+yfunc <- function(X.model, newdata) {
+  return(as.numeric(predict(X.model, newdata)))
+}
+df = as.data.frame(df)
+par(mfrow=c(2,3))
+
+for (i in 1:13) {
+  ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = i, NA.plot = TRUE)
+}
+```
+reviews per month, bedroom, bathroom
+
+```{r}
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(9, 10), K=50, NA.plot = TRUE)
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(9, 11), K=50, NA.plot = TRUE)
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(10, 11), K=50, NA.plot = TRUE)
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(4, 9), K=50, NA.plot = TRUE)
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(4, 10), K=50, NA.plot = TRUE)
+a=ALEPlot(df[, c(1:2, 4:14)], nn1, pred.fun = yfunc, J = c(4, 11), K=50, NA.plot = TRUE)
+
+```
+
+
+```{r}
+plot(yhat, e)
+abline(h = 0, col = "red", lty = 2)
+```
+
+
